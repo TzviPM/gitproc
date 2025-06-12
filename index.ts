@@ -26,8 +26,9 @@ async function cmdFilter(pattern: string) {
 
 // Acquire (lock) a checkout for a repo
 async function cmdAcquire(repoArg?: string) {
-  const path = await acquireCheckout(repoArg);
-  console.log(path);
+  const result = await acquireCheckout(repoArg);
+  console.log(result.directory);
+  console.log(`(id: ${result.id})`);
 }
 
 // Release (unlock) a checkout
@@ -41,8 +42,8 @@ function usage() {
 Commands:
   list, ls                List all slots and their lock status
   filter, -F, grep <pat>  Filter slots by name matching pattern
-  acquire, a <slot>       Manually acquire lock on a slot
-  release, r <slot>       Release lock on slot (rm .lock)
+  acquire, a <slot>       Manually acquire lock on a slot (prints directory and id)
+  release, r <id>         Release lock on slot by id (not directory)
   help, -h, --help        Show this help message
 `);
 }
