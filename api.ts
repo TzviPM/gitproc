@@ -60,6 +60,11 @@ export interface AcquireResult {
   directory: string; // The full path to the checkout directory
 }
 
+export interface ParallelToolOptions {
+  maxParallelism: number; // Maximum number of concurrent checkouts for this tool
+  repo?: string; // Repository URL, will be inferred if not provided
+}
+
 // --- Zod Schemas ---
 const patternSchema = z.string().min(1, "Pattern is required");
 const repoArgSchema = z.string().min(1, "Repository URL or name is required").optional();
@@ -85,7 +90,7 @@ export async function filterCheckouts(pattern: string): Promise<string[]> {
   return rows.filter(row => regex.test(row.checkout)).map(row => row.checkout);
 }
 
-export async function acquireCheckout(repoArg?: string): Promise<AcquireResult> {
+export async function acquireCheckout(repoArg?: string, maxCheckouts?: number): Promise<AcquireResult> {
   if (repoArg !== undefined) repoArgSchema.parse(repoArg);
   const db = await ensurePoolDirAndDb();
   let repo = repoArg;
@@ -98,6 +103,14 @@ export async function acquireCheckout(repoArg?: string): Promise<AcquireResult> 
   let checkout: string;
   let isNew = false;
   let directory: string;
+
+  // Check if max checkouts limit would be exceeded
+  if (maxCheckouts && maxCheckouts > 0) {
+    const currentCount = db.query("SELECT COUNT(*) as count FROM checkout_metadata WHERE repo = ?").get(repo) as {count: number};
+    if (currentCount.count >= maxCheckouts) {
+      throw new Error(`Maximum checkouts limit (${maxCheckouts}) reached for repository: ${repo}`);
+    }
+  }
 
   db.run("BEGIN TRANSACTION");
   try {
@@ -178,4 +191,12 @@ export async function removeCheckout(checkout: string): Promise<void> {
   
   // Remove from database
   db.run("DELETE FROM checkout_metadata WHERE checkout = ?", [checkout]);
+}
+
+/**
+ * Acquire a checkout with specified max parallelism constraint for tools
+ * This is a convenience wrapper around acquireCheckout for tools that need to limit parallelism
+ */
+export async function acquireForTool(options: ParallelToolOptions): Promise<AcquireResult> {
+  return acquireCheckout(options.repo, options.maxParallelism);
 } 

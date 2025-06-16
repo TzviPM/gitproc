@@ -1,5 +1,8 @@
 import { listCheckouts, filterCheckouts, acquireCheckout, releaseCheckout, removeCheckout } from "./api";
 
+// Export API functions for external tools
+export { acquireForTool, releaseCheckout, type ParallelToolOptions, type AcquireResult } from "./api";
+
 // List all checkouts and their lock status from the database
 async function cmdList() {
   const rows = await listCheckouts();
@@ -25,8 +28,12 @@ async function cmdFilter(pattern: string) {
 }
 
 // Acquire (lock) a checkout for a repo
-async function cmdAcquire(repoArg?: string) {
-  const result = await acquireCheckout(repoArg);
+async function cmdAcquire(repoArg?: string, maxCheckoutsArg?: string) {
+  const maxCheckouts = maxCheckoutsArg ? parseInt(maxCheckoutsArg, 10) : undefined;
+  if (maxCheckoutsArg && (isNaN(maxCheckouts!) || maxCheckouts! <= 0)) {
+    throw new Error("Max checkouts must be a positive integer");
+  }
+  const result = await acquireCheckout(repoArg, maxCheckouts);
   console.log(result.directory);
   console.log(`(id: ${result.id})`);
 }
@@ -48,7 +55,8 @@ function usage() {
 Commands:
   list, ls                List all slots and their lock status
   filter, -F, grep <pat>  Filter slots by name matching pattern
-  acquire, a <slot>       Manually acquire lock on a slot (prints directory and id)
+  acquire, a <slot> [max] Manually acquire lock on a slot (prints directory and id)
+                          Optional max parameter limits total checkouts for repo
   release, r <id>         Release lock on slot by id (not directory)
   remove, rm <id>         Remove a checkout completely (deletes worktree)
   help, -h, --help        Show this help message
@@ -75,7 +83,7 @@ export async function main() {
         break;
       case "acquire":
       case "a":
-        await cmdAcquire(args[0]);
+        await cmdAcquire(args[0], args[1]);
         break;
       case "release":
       case "r":
