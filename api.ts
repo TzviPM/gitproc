@@ -1,14 +1,19 @@
 import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import { z } from "zod";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 const HOME = Bun.env.HOME || process.env.HOME || "";
 const POOL_DIR = `${HOME}/.gitproc_pool`;
 const DB_PATH = `${POOL_DIR}/gitproc.db`;
+const SHARED_REPOS_DIR = `${POOL_DIR}/shared_repos`;
 
 // Ensure pool directory and database exist, and initialize DB schema if needed
 async function ensurePoolDirAndDb() {
   await mkdir(POOL_DIR, { recursive: true });
+  await mkdir(SHARED_REPOS_DIR, { recursive: true });
   const db = new Database(DB_PATH);
   db.run(`CREATE TABLE IF NOT EXISTS checkout_metadata (
     checkout TEXT PRIMARY KEY,
@@ -18,6 +23,27 @@ async function ensurePoolDirAndDb() {
     status TEXT
   )`);
   return db;
+}
+
+// Generate a consistent directory name for a repo URL
+function getSharedRepoDir(repoUrl: string): string {
+  const hash = createHash('sha256').update(repoUrl).digest('hex').substring(0, 12);
+  const repoName = repoUrl.split('/').pop()?.replace(/\.git$/, '') || 'repo';
+  return join(SHARED_REPOS_DIR, `${repoName}-${hash}`);
+}
+
+// Ensure the shared repository exists for a given repo URL
+async function ensureSharedRepo(repoUrl: string): Promise<string> {
+  const sharedRepoDir = getSharedRepoDir(repoUrl);
+  
+  if (!existsSync(sharedRepoDir)) {
+    await Bun.$`git clone --bare ${repoUrl} ${sharedRepoDir}`;
+  } else {
+    // Update the shared repo to get latest refs
+    await Bun.$`git -C ${sharedRepoDir} fetch --all --prune`;
+  }
+  
+  return sharedRepoDir;
 }
 
 // --- Interfaces ---
@@ -102,12 +128,16 @@ export async function acquireCheckout(repoArg?: string): Promise<AcquireResult> 
 
   if (isNew) {
     try {
-      await Bun.$`git clone ${repo} ${directory}`;
+      // Ensure shared repo exists and is up to date
+      const sharedRepoDir = await ensureSharedRepo(repo);
+      
+      // Create worktree from shared repo
+      await Bun.$`git -C ${sharedRepoDir} worktree add ${directory} HEAD`;
     } catch (cloneErr) {
       // Clean up the row if clone fails
       const db2 = await ensurePoolDirAndDb();
       db2.run("DELETE FROM checkout_metadata WHERE checkout = ?", [checkout]);
-      throw new Error(`git clone failed: ${cloneErr}`);
+      throw new Error(`git worktree creation failed: ${cloneErr}`);
     }
   }
 
@@ -124,4 +154,28 @@ export async function releaseCheckout(checkout: string): Promise<void> {
   if (!row) throw new Error(`${checkout} does not exist in the pool`);
   if (row.status !== "locked") throw new Error(`${checkout} is not locked`);
   db.run("UPDATE checkout_metadata SET pid = NULL, timestamp = NULL, status = 'free' WHERE checkout = ?", [checkout]);
+}
+
+/**
+ * Remove a checkout completely (for cleanup)
+ */
+export async function removeCheckout(checkout: string): Promise<void> {
+  checkoutSchema.parse(checkout);
+  const db = await ensurePoolDirAndDb();
+  const row = db.query("SELECT repo FROM checkout_metadata WHERE checkout = ?").get(checkout) as {repo?: string} | undefined;
+  if (!row) throw new Error(`${checkout} does not exist in the pool`);
+  
+  const directory = `${POOL_DIR}/${checkout}`;
+  const sharedRepoDir = getSharedRepoDir(row.repo!);
+  
+  try {
+    // Remove the worktree
+    await Bun.$`git -C ${sharedRepoDir} worktree remove ${directory} --force`;
+  } catch (err) {
+    // If worktree removal fails, just remove the directory
+    await Bun.$`rm -rf ${directory}`;
+  }
+  
+  // Remove from database
+  db.run("DELETE FROM checkout_metadata WHERE checkout = ?", [checkout]);
 } 
