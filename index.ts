@@ -1,4 +1,7 @@
-import { listCheckouts, filterCheckouts, acquireCheckout, releaseCheckout } from "./api";
+import { listCheckouts, filterCheckouts, acquireCheckout, releaseCheckout, removeCheckout } from "./api";
+
+// Export API functions for external tools
+export { acquireForTool, releaseCheckout, type ParallelToolOptions, type AcquireResult } from "./api";
 
 // List all checkouts and their lock status from the database
 async function cmdList() {
@@ -25,8 +28,12 @@ async function cmdFilter(pattern: string) {
 }
 
 // Acquire (lock) a checkout for a repo
-async function cmdAcquire(repoArg?: string) {
-  const result = await acquireCheckout(repoArg);
+async function cmdAcquire(repoArg?: string, maxCheckoutsArg?: string) {
+  const maxCheckouts = maxCheckoutsArg ? parseInt(maxCheckoutsArg, 10) : undefined;
+  if (maxCheckoutsArg && (isNaN(maxCheckouts!) || maxCheckouts! <= 0)) {
+    throw new Error("Max checkouts must be a positive integer");
+  }
+  const result = await acquireCheckout(repoArg, maxCheckouts);
   console.log(result.directory);
   console.log(`(id: ${result.id})`);
 }
@@ -37,13 +44,21 @@ async function cmdRelease(checkout: string) {
   console.log(`Released ${checkout}`);
 }
 
+// Remove a checkout completely
+async function cmdRemove(checkout: string) {
+  await removeCheckout(checkout);
+  console.log(`Removed ${checkout}`);
+}
+
 function usage() {
   console.log(`\nUsage: gitproc <command> [args]\n
 Commands:
   list, ls                List all slots and their lock status
   filter, -F, grep <pat>  Filter slots by name matching pattern
-  acquire, a <slot>       Manually acquire lock on a slot (prints directory and id)
+  acquire, a <slot> [max] Manually acquire lock on a slot (prints directory and id)
+                          Optional max parameter limits total checkouts for repo
   release, r <id>         Release lock on slot by id (not directory)
+  remove, rm <id>         Remove a checkout completely (deletes worktree)
   help, -h, --help        Show this help message
 `);
 }
@@ -68,12 +83,17 @@ export async function main() {
         break;
       case "acquire":
       case "a":
-        await cmdAcquire(args[0]);
+        await cmdAcquire(args[0], args[1]);
         break;
       case "release":
       case "r":
         if (!args[0]) throw new Error("Checkout required for release");
         await cmdRelease(args[0]);
+        break;
+      case "remove":
+      case "rm":
+        if (!args[0]) throw new Error("Checkout required for remove");
+        await cmdRemove(args[0]);
         break;
       default:
         console.log(`Unknown command: ${cmd}`);
